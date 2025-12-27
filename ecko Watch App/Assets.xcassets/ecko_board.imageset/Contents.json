@@ -1,0 +1,33 @@
+{
+  "images" : [
+    {
+      "filename" : "ecko_board.png",
+      "idiom" : "watch"
+    },
+    {
+      "filename" : "ecko_board 1.png",
+      "idiom" : "universal",
+      "scale" : "1x",
+      "unassigned" : true
+    },
+    {
+      "filename" : "ecko_board 2.png",
+      "idiom" : "universal",
+      "scale" : "2x",
+      "unassigned" : true
+    },
+    {
+      "filename" : "ecko_board 3.png",
+      "idiom" : "universal",
+      "scale" : "3x",
+      "unassigned" : true
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  },
+  "properties" : {
+    "preserves-vector-representation" : true
+  }
+}

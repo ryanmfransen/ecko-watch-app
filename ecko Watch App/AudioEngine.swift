@@ -32,7 +32,7 @@ class AudioEngine: AudioService {
     }
 
     func playError() {
-        toneGenerator.play(frequency: 100.0, waveform: .sawtooth)
+        toneGenerator.play(frequency: 42.0, waveform: .square)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.stop()
         }
