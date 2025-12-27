@@ -13,15 +13,15 @@ protocol AudioService {
     func stop()
 }
 
-class SimonAudioEngine: AudioService {
+class AudioEngine: AudioService {
     private let toneGenerator = ToneGenerator()
 
     // Encapsulated Frequencies (Original 1978 Bugle Scale)
     private let frequencies: [GameViewModel.Quadrant: Float] = [
         .green: 391.99,  // G4
-        .red: 329.63,    // E4 (Original standard)
+        .red: 329.63,    // E4
         .yellow: 261.63, // C4
-        .blue: 196.00    // G3 (Original standard)
+        .blue: 196.00    // G3
     ]
 
     func play(quadrant: GameViewModel.Quadrant) {
@@ -33,6 +33,9 @@ class SimonAudioEngine: AudioService {
 
     func playError() {
         toneGenerator.play(frequency: 100.0, waveform: .sawtooth)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.stop()
+        }
     }
 
     func stop() {
