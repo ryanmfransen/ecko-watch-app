@@ -1,25 +1,21 @@
 import AVFoundation
 
 class ToneGenerator {
-    enum Waveform {
-        case sine
-        case sawtooth
-        case square
-    }
+    enum Waveform { case sine, sawtooth, square }
 
     private var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode!
     private var isPlaying = false
 
     private var currentFrequency: Float = 440.0
-    private var currentWaveform: Waveform = .square
-    private let sampleRate: Float
+    private var sampleRate: Float = 22050
     private var phase: Float = 0.0
-    private var amplitude: Float = 0.0 // Start silent
+    
+    // Use an Atomic-style approach: amplitude is modified here, read in render block
+    var amplitude: Float = 0.0
 
     init() {
-        let retroFormat = AVAudioFormat(standardFormatWithSampleRate: 22050, channels: 1)!
-        self.sampleRate = 22050
+        let retroFormat = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1)!
         setupEngine(format: retroFormat)
     }
 
@@ -28,30 +24,21 @@ class ToneGenerator {
             guard let strongSelf = self else { return noErr }
             
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
-            let localFreq = strongSelf.currentFrequency
-            let sampleRate = strongSelf.sampleRate
-            var localPhase = strongSelf.phase
-            let phaseIncrement = localFreq / sampleRate
-            
-            // OPTIMIZATION: Capture amplitude once per buffer cycle
+            let phaseIncrement = strongSelf.currentFrequency / strongSelf.sampleRate
             let currentAmp = strongSelf.amplitude
             
             for frame in 0..<Int(frameCount) {
-                // High/Low square wave logic using the captured amplitude
-                let value: Float = (localPhase < 0.5) ? currentAmp : -currentAmp
+                // Square wave math
+                let value: Float = (strongSelf.phase < 0.5) ? currentAmp : -currentAmp
                 
                 for buffer in ablPointer {
-                    if let rawData = buffer.mData {
-                        let buf = rawData.assumingMemoryBound(to: Float.self)
-                        buf[frame] = value
-                    }
+                    let buf = buffer.mData!.assumingMemoryBound(to: Float.self)
+                    buf[frame] = value
                 }
                 
-                localPhase += phaseIncrement
-                if localPhase >= 1.0 { localPhase -= 1.0 }
+                strongSelf.phase += phaseIncrement
+                if strongSelf.phase >= 1.0 { strongSelf.phase -= 1.0 }
             }
-            
-            strongSelf.phase = localPhase
             return noErr
         }
         
@@ -61,26 +48,17 @@ class ToneGenerator {
         engine.prepare()
     }
 
-    func play(frequency: Float, waveform: Waveform = .square) {
+    func play(frequency: Float) {
         self.currentFrequency = frequency
-        self.currentWaveform = waveform
-        
         self.amplitude = 0.3
         
         if !isPlaying {
-            do {
-                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
-                try AVAudioSession.sharedInstance().setActive(true)
-                try engine.start()
-                isPlaying = true
-            } catch {
-                print("Could not start engine: \(error)")
-            }
+            try? engine.start()
+            isPlaying = true
         }
     }
 
     func stop() {
-        // Smoothly silence without tearing down the engine
         self.amplitude = 0.0
     }
 }

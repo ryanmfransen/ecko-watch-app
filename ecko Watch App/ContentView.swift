@@ -149,12 +149,28 @@ class GameViewModel: ObservableObject {
     }
 
     private func endGame() {
-        gameState = .gameOver
         sequencePlaybackTask?.cancel()
-        audioEngine.playError()
-        if score > highScore {
-            highScore = score
-            UserDefaults.standard.set(highScore, forKey: "highScore")
+        
+        // Fire haptic immediately (hardware-level, doesn't affect CPU)
+        WKInterfaceDevice.current().play(.failure)
+
+        Task {
+            // 1. Play error sound and WAIT for it to finish
+            await audioEngine.playError()
+            
+            // 2. ONLY NOW update the UI. The CPU is now free from audio duties
+            // and can dedicate 100% of its power to the Blur effect.
+            await MainActor.run {
+                withAnimation(.easeInOut(duration: 0.5)) {
+                    self.gameState = .gameOver
+                }
+            }
+            
+            // 3. Save score last (Disk I/O is also slow, keep it out of the animation window)
+            if score > highScore {
+                highScore = score
+                UserDefaults.standard.set(highScore, forKey: "highScore")
+            }
         }
     }
 }
