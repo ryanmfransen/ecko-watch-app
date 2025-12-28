@@ -295,17 +295,29 @@ struct ContentView: View {
 // MARK: - Shapes
 struct QuadrantClipShape: Shape {
     let quadrant: GameViewModel.Quadrant
+    
     func path(in rect: CGRect) -> Path {
         var path = Path()
+        // Using rect.midX/midY ensures we are always centered
+        // regardless of screen offsets
         let center = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = max(rect.width, rect.height)
+        
         let startAngle: Angle = {
             switch quadrant {
-            case .green: return .degrees(180); case .red: return .degrees(270)
-            case .yellow: return .degrees(90); case .blue: return .degrees(0)
+            case .green:  return .degrees(180)
+            case .red:    return .degrees(270)
+            case .yellow: return .degrees(90)
+            case .blue:   return .degrees(0)
             }
         }()
+        
         path.move(to: center)
-        path.addArc(center: center, radius: rect.width, startAngle: startAngle, endAngle: startAngle + .degrees(90), clockwise: false)
+        path.addArc(center: center,
+                    radius: radius,
+                    startAngle: startAngle,
+                    endAngle: startAngle + .degrees(90),
+                    clockwise: false)
         path.closeSubpath()
         return path
     }
