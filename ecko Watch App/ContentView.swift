@@ -319,7 +319,7 @@ struct ContentView: View {
                     .shadow(color: active.color.opacity(0.7), radius: 15)
                     .blendMode(.screen)
             }
-            resetButtonView(size: boardSize * 0.25)
+            resetButtonView(size: boardSize * 0.28)
         }
         .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
         .contentShape(Rectangle())
@@ -331,7 +331,7 @@ struct ContentView: View {
     }
 
     private func resetButtonView(size: CGFloat) -> some View {
-        let internalIconSize = size * 1.1 // Size for the main arrow
+        let internalIconSize = size * 0.95 // Size for the main arrow
         
         return ZStack {
             // The Button Background
@@ -344,9 +344,9 @@ struct ContentView: View {
                     .font(.system(size: internalIconSize))
                     .foregroundColor(.gray.opacity(0.75))
                     .shadow(radius: 4)
-                    .offset(y: -2.75)
+                    .offset(y: -2.7)
         }
-        .frame(width: size, height: size)
+        .frame(width: size * 1.15, height: size * 1.15)
         .contentShape(Circle())
         // Gesture Logic
         .onTapGesture {
