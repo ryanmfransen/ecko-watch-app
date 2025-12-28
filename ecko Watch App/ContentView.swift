@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import AVFoundation
+import WatchKit
 
 // MARK: - Game State and Logic
 class GameViewModel: ObservableObject {
@@ -26,6 +27,13 @@ class GameViewModel: ObservableObject {
     @Published var activeQuadrant: Quadrant?
     @Published var score = 0
     @Published var highScore: Int = 0
+    @Published var isNewHighScore = false // Track celebration state
+    
+    @Published var selectedWaveform: ToneGenerator.Waveform = .square {
+        didSet {
+            audioEngine.setWaveform(selectedWaveform)
+        }
+    }
     
     private var touchStartQuadrant: Quadrant?
     private let audioEngine: AudioService = AudioEngine()
@@ -33,6 +41,8 @@ class GameViewModel: ObservableObject {
     
     init() {
         self.highScore = UserDefaults.standard.integer(forKey: "highScore")
+        let savedWaveform = UserDefaults.standard.integer(forKey: "selectedWaveform")
+        self.selectedWaveform = ToneGenerator.Waveform(rawValue: savedWaveform) ?? .square
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .default, options: [])
         try? session.setActive(true)
@@ -50,6 +60,8 @@ class GameViewModel: ObservableObject {
         gameState = .computer
         activeQuadrant = nil
         touchStartQuadrant = nil
+        isNewHighScore = false
+        audioEngine.stop()
         addToSequenceAndPlay()
     }
 
@@ -60,26 +72,35 @@ class GameViewModel: ObservableObject {
     }
 
     func playSequence() {
-        sequencePlaybackTask?.cancel()
-        sequencePlaybackTask = Task {
-            try await Task.sleep(for: .seconds(0.8))
-            for quadrant in sequence {
-                if Task.isCancelled { return }
-                await MainActor.run {
-                    activeQuadrant = quadrant
+            sequencePlaybackTask?.cancel()
+            sequencePlaybackTask = Task {
+                // Initial "Get Ready" pause
+                try await Task.sleep(for: .seconds(0.8))
+                
+                for quadrant in sequence {
+                    if Task.isCancelled { return }
+                    
+                    // 1. Start Light & Sound simultaneously
+                    await MainActor.run { activeQuadrant = quadrant }
+                    await audioEngine.play(quadrant: quadrant)
+                    
+                    // 2. The ONLY sleep that matters (Master Clock)
+                    try await Task.sleep(for: .seconds(displayDuration))
+                    
+                    // 3. Stop Light & Sound simultaneously
+                    await MainActor.run { activeQuadrant = nil }
+                    audioEngine.stop()
+                    
+                    // 4. Short gap between notes
+                    try await Task.sleep(for: .seconds(0.05))
                 }
                 
-                await audioEngine.play(quadrant: quadrant)
-
-                await MainActor.run {
-                    activeQuadrant = nil
-                }
-                try await Task.sleep(for: .seconds(0.05))
+                // Hand control back to the user
+                await MainActor.run { gameState = .user }
             }
-            await MainActor.run { gameState = .user }
         }
-    }
 
+    // Helper to determine which quadrant was touched
     private func quadrant(for location: CGPoint, in size: CGSize) -> Quadrant? {
         let centerX = size.width / 2
         let centerY = size.height / 2
@@ -102,18 +123,24 @@ class GameViewModel: ObservableObject {
         if touchStartQuadrant == nil && currentPointQuadrant != nil {
             touchStartQuadrant = currentPointQuadrant
             activeQuadrant = currentPointQuadrant
+            
+            // BRIDGE: Start a new Task to "enter" the async world
             Task {
                 await audioEngine.play(quadrant: currentPointQuadrant!)
             }
+            
             WKInterfaceDevice.current().play(.click)
             return
         }
         
         if let locked = touchStartQuadrant {
             if currentPointQuadrant == locked {
+                // Finger is still inside the quadrant it started in
                 activeQuadrant = locked
             } else {
+                // Finger slid out - turn off light and sound
                 activeQuadrant = nil
+                audioEngine.stop()
             }
         }
     }
@@ -135,6 +162,7 @@ class GameViewModel: ObservableObject {
 
         userSequence.append(locked)
         activeQuadrant = nil
+        audioEngine.stop()
 
         if userSequence.last != sequence[userSequence.count - 1] {
             endGame()
@@ -148,39 +176,61 @@ class GameViewModel: ObservableObject {
 
     private func endGame() {
         sequencePlaybackTask?.cancel()
-        
-        // Fire haptic immediately (hardware-level, doesn't affect CPU)
         WKInterfaceDevice.current().play(.failure)
 
         Task {
-            // 1. Play error sound and WAIT for it to finish
+            // Check for high score BEFORE the UI changes
+            let recordBroken = score > highScore
+            
+            // Await the hardware audio to finish so CPU is free for Blur
             await audioEngine.playError()
             
-            // 2. ONLY NOW update the UI. The CPU is now free from audio duties
-            // and can dedicate 100% of its power to the Blur effect.
             await MainActor.run {
+                if recordBroken {
+                    self.isNewHighScore = true
+                    self.highScore = self.score
+                    UserDefaults.standard.set(self.highScore, forKey: "highScore")
+                    WKInterfaceDevice.current().play(.success)
+                }
+                
                 withAnimation(.easeInOut(duration: 0.5)) {
                     self.gameState = .gameOver
                 }
             }
-            
-            // 3. Save score last (Disk I/O is also slow, keep it out of the animation window)
-            if score > highScore {
-                highScore = score
-                UserDefaults.standard.set(highScore, forKey: "highScore")
-            }
         }
+    }
+}
+
+// MARK: - Celebration View
+struct ConfettiParticle: View {
+    @State private var xOffset: CGFloat = 0
+    @State private var yOffset: CGFloat = 0
+    @State private var opacity: Double = 1.0
+    
+    let color: Color
+    
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+            .offset(x: xOffset, y: yOffset)
+            .opacity(opacity)
+            .onAppear {
+                withAnimation(.easeOut(duration: 2.0)) {
+                    xOffset = CGFloat.random(in: -100...100)
+                    yOffset = CGFloat.random(in: -150...50)
+                    opacity = 0
+                }
+            }
     }
 }
 
 // MARK: - Main Game View
 struct ContentView: View {
     @StateObject private var viewModel = GameViewModel()
-    
-    // ADDED: This is the environment variable that tracks app state
     @Environment(\.scenePhase) private var scenePhase
-
     @State private var hasInitialStarted = false
+    @State private var showSettings = false
     
     var body: some View {
         GeometryReader { geometry in
@@ -188,21 +238,31 @@ struct ContentView: View {
                 gameView(geometry: geometry)
                     .blur(radius: viewModel.gameState == .gameOver ? 4 : 0)
                 
+                // Celebration layer
+                if viewModel.isNewHighScore {
+                    ForEach(0..<20, id: \.self) { i in
+                        ConfettiParticle(color: [.yellow, .orange, .white].randomElement()!)
+                    }
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                }
+                
                 if viewModel.gameState == .gameOver {
                     gameOverOverlay
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(viewModel: viewModel)
+        }
         .onAppear {
-            // 1. Cold Launch: Start the game once and mark it as done
             if !hasInitialStarted {
                 viewModel.startGame()
                 hasInitialStarted = true
             }
         }
         .onChange(of: scenePhase) { oldValue, newValue in
-        if newValue == .active && oldValue == .background {
+            if newValue == .active && oldValue == .background {
                 viewModel.startGame()
             }
         }
@@ -213,16 +273,29 @@ struct ContentView: View {
         ZStack {
             Color.black.opacity(0.6).ignoresSafeArea()
             VStack(spacing: 8) {
-                Text("GAME OVER")
-                    .font(.system(size: 18, weight: .black, design: .monospaced))
-                    .foregroundColor(.red)
+                Text(viewModel.isNewHighScore ? "NEW RECORD!" : "GAME OVER")
+                    .font(.system(size: 16, weight: .black, design: .monospaced))
+                    .foregroundColor(viewModel.isNewHighScore ? .yellow : .red)
+                
                 VStack(spacing: 2) {
                     Text("SCORE: \(viewModel.score)")
+                        .scaleEffect(viewModel.isNewHighScore ? 1.2 : 1.0)
                     Text("BEST: \(viewModel.highScore)").foregroundColor(.yellow)
                 }
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
+                
                 Button("TRY AGAIN") { viewModel.startGame() }
-                    .buttonStyle(.borderedProminent).tint(.red)
+                    .buttonStyle(.borderedProminent)
+                    .tint(viewModel.isNewHighScore ? .yellow : .red)
+                    .foregroundColor(viewModel.isNewHighScore ? .black : .white)
+                
+                Button(action: { showSettings = true }) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.gray)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
             }
         }
     }
@@ -258,10 +331,32 @@ struct ContentView: View {
     }
 
     private func resetButtonView(size: CGFloat) -> some View {
-        ZStack {
-            Circle().fill(Color(white: 0.1)).overlay(Circle().stroke(Color.gray.opacity(0.5), lineWidth: 1))
-            Image(systemName: "arrow.counterclockwise").font(.system(size: 18, weight: .bold)).foregroundColor(.white)
-        }.frame(width: size, height: size)
+        let internalIconSize = size * 1.1 // Size for the main arrow
+        
+        return ZStack {
+            // The Button Background
+            Circle()
+                .fill(Color(white: 0.12))
+                .overlay(Circle().stroke(Color.gray.opacity(0.4), lineWidth: 1.5))
+                .shadow(radius: 4)
+
+                Image(systemName: "slider.horizontal.2.arrow.trianglehead.counterclockwise")
+                    .font(.system(size: internalIconSize))
+                    .foregroundColor(.gray.opacity(0.75))
+                    .shadow(radius: 4)
+                    .offset(y: -2.75)
+        }
+        .frame(width: size, height: size)
+        .contentShape(Circle())
+        // Gesture Logic
+        .onTapGesture {
+            WKInterfaceDevice.current().play(.click)
+            viewModel.startGame()
+        }
+        .onLongPressGesture(minimumDuration: 0.5) {
+            WKInterfaceDevice.current().play(.directionDown) // Distinct haptic for settings
+            showSettings = true
+        }
     }
 }
 
@@ -282,5 +377,30 @@ struct QuadrantClipShape: Shape {
         path.addArc(center: center, radius: radius, startAngle: startAngle, endAngle: startAngle + .degrees(90), clockwise: false)
         path.closeSubpath()
         return path
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var viewModel: GameViewModel
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Text("SOUND STYLE")
+                .font(.system(.headline, design: .monospaced))
+            
+            // Picker is much better than Toggles for enums
+            Picker("Waveform", selection: $viewModel.selectedWaveform) {
+                ForEach(ToneGenerator.Waveform.allCases, id: \.self) { wave in
+                    Text(wave.name).tag(wave)
+                }
+            }
+            .pickerStyle(.wheel) // Optimized for Digital Crown
+            .frame(height: 80)
+
+            Button("DONE") { dismiss() }
+                .buttonStyle(.borderedProminent)
+        }
+        .padding()
     }
 }

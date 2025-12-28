@@ -1,7 +1,21 @@
 import AVFoundation
 
 class ToneGenerator {
-    enum Waveform { case sine, sawtooth, square }
+    enum Waveform: Int, CaseIterable {
+        case square = 0
+        case sine = 1
+        case sawtooth = 2
+        case triangle = 3
+        
+        var name: String {
+            switch self {
+            case .square: return "Retro Square"
+            case .sine: return "Modern Sine"
+            case .sawtooth: return "Gritty Saw"
+            case .triangle: return "Smooth Triangle"
+            }
+        }
+    }
 
     private var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode!
@@ -11,10 +25,15 @@ class ToneGenerator {
     private var sampleRate: Float = 22050
     private var phase: Float = 0.0
     
-    // Use an Atomic-style approach: amplitude is modified here, read in render block
+    // Controlled by the Settings/ViewModel
     var amplitude: Float = 0.0
+    var selectedWaveform: Waveform = .square
 
     init() {
+        // Load the saved preference immediately
+        let savedRaw = UserDefaults.standard.integer(forKey: "selectedWaveform")
+        self.selectedWaveform = Waveform(rawValue: savedRaw) ?? .square
+        
         let retroFormat = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1)!
         setupEngine(format: retroFormat)
     }
@@ -26,14 +45,29 @@ class ToneGenerator {
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
             let phaseIncrement = strongSelf.currentFrequency / strongSelf.sampleRate
             let currentAmp = strongSelf.amplitude
+            let waveform = strongSelf.selectedWaveform
             
             for frame in 0..<Int(frameCount) {
-                // Square wave math
-                let value: Float = (strongSelf.phase < 0.5) ? currentAmp : -currentAmp
+                var value: Float = 0
+                let p = strongSelf.phase // 0.0 to 1.0
+                
+                // MATH: Generate the specific wave shape
+                switch waveform {
+                case .square:
+                    value = (p < 0.5) ? 1.0 : -1.0
+                case .sine:
+                    value = sin(p * 2.0 * .pi)
+                case .sawtooth:
+                    value = 2.0 * p - 1.0
+                case .triangle:
+                    value = 4.0 * abs(p - 0.5) - 1.0
+                }
+                
+                let sample = value * currentAmp
                 
                 for buffer in ablPointer {
                     let buf = buffer.mData!.assumingMemoryBound(to: Float.self)
-                    buf[frame] = value
+                    buf[frame] = sample
                 }
                 
                 strongSelf.phase += phaseIncrement
