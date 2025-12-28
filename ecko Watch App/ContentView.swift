@@ -50,7 +50,6 @@ class GameViewModel: ObservableObject {
         gameState = .computer
         activeQuadrant = nil
         touchStartQuadrant = nil
-        audioEngine.stop()
         addToSequenceAndPlay()
     }
 
@@ -68,13 +67,12 @@ class GameViewModel: ObservableObject {
                 if Task.isCancelled { return }
                 await MainActor.run {
                     activeQuadrant = quadrant
-                    audioEngine.play(quadrant: quadrant)
                 }
-                try await Task.sleep(for: .seconds(displayDuration))
-                if Task.isCancelled { return }
+                
+                await audioEngine.play(quadrant: quadrant)
+
                 await MainActor.run {
                     activeQuadrant = nil
-                    audioEngine.stop()
                 }
                 try await Task.sleep(for: .seconds(0.05))
             }
@@ -104,7 +102,9 @@ class GameViewModel: ObservableObject {
         if touchStartQuadrant == nil && currentPointQuadrant != nil {
             touchStartQuadrant = currentPointQuadrant
             activeQuadrant = currentPointQuadrant
-            audioEngine.play(quadrant: currentPointQuadrant!)
+            Task {
+                await audioEngine.play(quadrant: currentPointQuadrant!)
+            }
             WKInterfaceDevice.current().play(.click)
             return
         }
@@ -114,7 +114,6 @@ class GameViewModel: ObservableObject {
                 activeQuadrant = locked
             } else {
                 activeQuadrant = nil
-                audioEngine.stop()
             }
         }
     }
@@ -136,7 +135,6 @@ class GameViewModel: ObservableObject {
 
         userSequence.append(locked)
         activeQuadrant = nil
-        audioEngine.stop()
 
         if userSequence.last != sequence[userSequence.count - 1] {
             endGame()

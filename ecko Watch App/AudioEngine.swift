@@ -1,7 +1,7 @@
 import Foundation
 
 protocol AudioService {
-    func play(quadrant: GameViewModel.Quadrant)
+    func play(quadrant: GameViewModel.Quadrant) async
     func playError() async  // Now properly async
     func stop()
 }
@@ -12,26 +12,30 @@ class AudioEngine: AudioService {
     private let frequencies: [GameViewModel.Quadrant: Float] = [
         .green: 391.99, .red: 329.63, .yellow: 261.63, .blue: 196.00
     ]
+    
+    private let errorFrequency:Float = 44.0
 
-    func play(quadrant: GameViewModel.Quadrant) {
-        if let freq = frequencies[quadrant] {
-            toneGenerator.play(frequency: freq)
+    func play(quadrant: GameViewModel.Quadrant) async {
+        if let frequency = frequencies[quadrant] {
+            await play(frequency: frequency)
         }
     }
-
-    // This function now controls the lifecycle of the error sound
-    func playError() async {
-        toneGenerator.play(frequency: 42.0)
+    
+    func play(frequency: Float) async {
+        toneGenerator.play(frequency: frequency)
         
-        // Wait for 0.6s for the "buzz" to play out
-        // By awaiting here, we keep the CPU focus on the generator
-        try? await Task.sleep(for: .seconds(0.6))
+        // Wait for 0.4s for the tone to play out
+        try? await Task.sleep(for: .seconds(0.4))
         
         toneGenerator.stop()
         
         // Give the audio buffer a tiny moment (1 frame) to clear
-        // before we tell the UI to start blurring/rendering
         try? await Task.sleep(for: .seconds(0.05))
+    }
+
+    // This function now controls the lifecycle of the error sound
+    func playError() async {
+        await play(frequency: errorFrequency)
     }
 
     func stop() {
