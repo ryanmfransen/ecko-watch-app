@@ -1,10 +1,3 @@
-//
-//  ContentView.swift
-//  ecko Watch App
-//
-//  Created by Ryan Fransen on 2025-12-26.
-//
-
 import SwiftUI
 import Combine
 import AVFoundation
@@ -17,7 +10,6 @@ class GameViewModel: ObservableObject {
 
     enum Quadrant: CaseIterable {
         case green, red, yellow, blue
-
         var color: Color {
             switch self {
             case .green: return .green
@@ -34,6 +26,9 @@ class GameViewModel: ObservableObject {
     @Published var activeQuadrant: Quadrant?
     @Published var score = 0
     @Published var highScore: Int = 0
+    
+    // NEW: Track where the touch started to prevent "sliding" into other colors
+    private var touchStartQuadrant: Quadrant?
     
     private let audioEngine: AudioService = AudioEngine()
     private var sequencePlaybackTask: Task<Void, Error>?
@@ -55,6 +50,7 @@ class GameViewModel: ObservableObject {
         userSequence = []
         gameState = .computer
         activeQuadrant = nil
+        touchStartQuadrant = nil // Reset lock
         audioEngine.stop()
         addToSequenceAndPlay()
     }
@@ -69,27 +65,20 @@ class GameViewModel: ObservableObject {
         sequencePlaybackTask?.cancel()
         sequencePlaybackTask = Task {
             try await Task.sleep(for: .seconds(0.5))
-            
             for quadrant in sequence {
                 await MainActor.run {
                     activeQuadrant = quadrant
                     audioEngine.play(quadrant: quadrant)
                 }
-                
                 try await Task.sleep(for: .seconds(displayDuration))
-                
                 await MainActor.run {
                     activeQuadrant = nil
                     audioEngine.stop()
                 }
-                
                 try await Task.sleep(for: .seconds(0.05))
                 if Task.isCancelled { return }
             }
-            
-            await MainActor.run {
-                gameState = .user
-            }
+            await MainActor.run { gameState = .user }
         }
     }
 
@@ -97,91 +86,96 @@ class GameViewModel: ObservableObject {
     private func quadrant(for location: CGPoint, in size: CGSize) -> Quadrant? {
         let centerX = size.width / 2
         let centerY = size.height / 2
-        
-        // 1. Calculate distance from center (Pythagorean theorem)
         let dx = location.x - centerX
         let dy = location.y - centerY
         let distance = sqrt(dx*dx + dy*dy)
         
-        // 2. Define the Dead Zone (Reset Circle)
-        let deadZoneRadius = size.width * 0.125
-        if distance < deadZoneRadius {
-            return nil // Finger is inside the reset button
-        }
+        if distance < (size.width * 0.125) { return nil }
         
-        // 3. Logic for the four quadrants
-        if location.x < centerX && location.y < centerY {
-            return .green
-        } else if location.x >= centerX && location.y < centerY {
-            return .red
-        } else if location.x < centerX && location.y >= centerY {
-            return .yellow
-        } else if location.x >= centerX && location.y >= centerY {
-            return .blue
-        }
-        
+        if location.x < centerX && location.y < centerY { return .green }
+        else if location.x >= centerX && location.y < centerY { return .red }
+        else if location.x < centerX && location.y >= centerY { return .yellow }
+        else if location.x >= centerX && location.y >= centerY { return .blue }
         return nil
     }
 
     func handleDragChanged(location: CGPoint, size: CGSize) {
-        guard gameState == .user else { return }
-        let newQuadrant = quadrant(for: location, in: size)
-        
-        if activeQuadrant != newQuadrant {
-            if let newQuadrant = newQuadrant {
-                activeQuadrant = newQuadrant
-                audioEngine.play(quadrant: newQuadrant)
-            } else {
-                activeQuadrant = nil
-                audioEngine.stop()
+            guard gameState == .user else { return }
+            let currentPointQuadrant = quadrant(for: location, in: size)
+            
+            // 1. LOCK ON: If this is the start of the touch, lock the quadrant
+            if touchStartQuadrant == nil && currentPointQuadrant != nil {
+                touchStartQuadrant = currentPointQuadrant
+                activeQuadrant = currentPointQuadrant
+                audioEngine.play(quadrant: currentPointQuadrant!)
+                // Optional: Add a heavy haptic here to simulate the "click" down
+                WKInterfaceDevice.current().play(.click)
+                return
+            }
+            
+            // 2. VISUAL FEEDBACK:
+            // If the finger is still over the LOCKED quadrant, keep it lit.
+            // If the finger slides off, dim the light (like a physical button popping back up),
+            // but WE DO NOT change the touchStartQuadrant.
+            if let locked = touchStartQuadrant {
+                if currentPointQuadrant == locked {
+                    activeQuadrant = locked
+                    // If the sound stopped because they slid off and back on, restart it
+                    // (Depends on if your AudioEngine handles re-playing while already playing)
+                } else {
+                    activeQuadrant = nil
+                    // We keep the sound playing or stop it based on your preference.
+                    // Usually, physical buttons stop the tone when the contact is "broken".
+                    audioEngine.stop()
+                }
             }
         }
-    }
 
-    func handleDragEnded(location: CGPoint, size: CGSize) {
-        let centerX = size.width / 2
-        let centerY = size.height / 2
-        let dx = location.x - centerX
-        let dy = location.y - centerY
-        let distance = sqrt(dx*dx + dy*dy)
-        
-        let resetRadius = size.width * 0.125
-        
-        // UNIVERSAL RESET: If released in center, always restart
-        if distance < resetRadius {
-            startGame()
-            return
-        }
+        func handleDragEnded(location: CGPoint, size: CGSize) {
+            // Handle Reset separately as it's a special utility
+            let centerX = size.width / 2
+            let centerY = size.height / 2
+            let distance = sqrt(pow(location.x - centerX, 2) + pow(location.y - centerY, 2))
+            
+            if distance < (size.width * 0.125) {
+                touchStartQuadrant = nil
+                startGame()
+                return
+            }
 
-        // NORMAL GAMEPLAY: Handle quadrant selection
-        guard gameState == .user, let releasedQuadrant = activeQuadrant else {
-            activeQuadrant = nil
-            audioEngine.stop()
-            return
-        }
-        
-        activeQuadrant = nil
-        audioEngine.stop()
-        
-        userSequence.append(releasedQuadrant)
+            guard gameState == .user else {
+                touchStartQuadrant = nil
+                return
+            }
 
-        if userSequence.last != sequence[userSequence.count - 1] {
-            endGame()
-            return
-        }
+            // 3. REGISTER THE HIT:
+            // We don't care where the finger is now. We only care what quadrant was "primed" at the start.
+            if let locked = touchStartQuadrant {
+                // Register the sequence hit
+                userSequence.append(locked)
+                
+                // Clean up visuals/audio
+                activeQuadrant = nil
+                audioEngine.stop()
 
-        if userSequence.count == sequence.count {
-            score += 1
-            gameState = .computer
-            addToSequenceAndPlay()
+                // Logic Check
+                if userSequence.last != sequence[userSequence.count - 1] {
+                    endGame()
+                } else if userSequence.count == sequence.count {
+                    score += 1
+                    gameState = .computer
+                    addToSequenceAndPlay()
+                }
+            }
+            
+            // Clear the lock for the next touch
+            touchStartQuadrant = nil
         }
-    }
 
     private func endGame() {
         gameState = .gameOver
         sequencePlaybackTask?.cancel()
         audioEngine.playError()
-        
         if score > highScore {
             highScore = score
             UserDefaults.standard.set(highScore, forKey: "highScore")
@@ -190,66 +184,75 @@ class GameViewModel: ObservableObject {
 }
 
 // MARK: - Main Game View
+import SwiftUI
+import Combine
+import AVFoundation
+
 struct ContentView: View {
     @StateObject private var viewModel = GameViewModel()
     
     var body: some View {
         GeometryReader { geometry in
+            // By wrapping the ZStack in a frame equal to geometry.size,
+            // we force the center point to align with the screen center.
             ZStack {
-                // 1. The main game board (Always visible)
+                // 1. The main game board
                 gameView(geometry: geometry)
                     .blur(radius: viewModel.gameState == .gameOver ? 4 : 0)
                 
                 // 2. Game Over Overlay
                 if viewModel.gameState == .gameOver {
-                    ZStack {
-                        Color.black.opacity(0.6)
-                            .ignoresSafeArea()
-                        
-                        VStack(spacing: 8) {
-                            Text("GAME OVER")
-                                .font(.system(size: 18, weight: .black, design: .monospaced))
-                                .foregroundColor(.red)
-
-                            VStack(spacing: 2) {
-                                Text("SCORE: \(viewModel.score)")
-                                Text("BEST: \(viewModel.highScore)")
-                                    .foregroundColor(.yellow)
-                            }
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-
-                            Button(action: {
-                                viewModel.startGame()
-                            }) {
-                                Text("TRY AGAIN")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 8)
-                                    .background(Color.red.opacity(0.8))
-                                    .cornerRadius(20)
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                    }
+                    gameOverOverlay
                 }
             }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .onAppear(perform: viewModel.startGame)
-        .ignoresSafeArea()
+        .ignoresSafeArea() // Keeps the board large, but we center it manually above
     }
     
-    // MARK: - Game Board View
-    private func gameView(geometry: GeometryProxy) -> some View {
+    private var gameOverOverlay: some View {
         ZStack {
+            Color.black.opacity(0.6).ignoresSafeArea()
+            VStack(spacing: 8) {
+                Text("GAME OVER")
+                    .font(.system(size: 18, weight: .black, design: .monospaced))
+                    .foregroundColor(.red)
+                
+                VStack(spacing: 2) {
+                    Text("SCORE: \(viewModel.score)")
+                    Text("BEST: \(viewModel.highScore)")
+                        .foregroundColor(.yellow)
+                }
+                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                
+                Button("TRY AGAIN") {
+                    viewModel.startGame()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            }
+        }
+    }
+
+    private func gameView(geometry: GeometryProxy) -> some View {
+        // We use the smaller of the two dimensions to ensure a perfect circle
+        let boardSize = min(geometry.size.width, geometry.size.height)
+        
+        return ZStack {
+            // Background Board
             Image("ecko_board")
                 .resizable()
                 .scaledToFit()
+                .frame(width: boardSize, height: boardSize)
                 .brightness(-0.2)
             
+            // Active Quadrant Highlight
             if let active = viewModel.activeQuadrant {
                 Image("ecko_board")
                     .resizable()
                     .scaledToFit()
+                    .frame(width: boardSize, height: boardSize)
                     .brightness(0.2)
                     .contrast(1.2)
                     .saturation(1.5)
@@ -258,18 +261,19 @@ struct ContentView: View {
                     .blendMode(.screen)
             }
             
-            // Central Reset UI (Visual Only - logic handled by gesture)
-            resetButtonView(size: geometry.size.width * 0.25)
+            // Central Reset Button
+            resetButtonView(size: boardSize * 0.25)
         }
-        .frame(width: geometry.size.width, height: geometry.size.height)
+        // Force the ZStack to the center of the GeometryReader
+        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                .onChanged { value in
-                    viewModel.handleDragChanged(location: value.location, size: geometry.size)
+                .onChanged { v in
+                    viewModel.handleDragChanged(location: v.location, size: geometry.size)
                 }
-                .onEnded { value in
-                    viewModel.handleDragEnded(location: value.location, size: geometry.size)
+                .onEnded { v in
+                    viewModel.handleDragEnded(location: v.location, size: geometry.size)
                 }
         )
     }
@@ -280,46 +284,29 @@ struct ContentView: View {
                 .fill(Color(white: 0.1))
                 .overlay(Circle().stroke(Color.gray.opacity(0.5), lineWidth: 1))
             
-            VStack(spacing: 2) {
-                Image(systemName: "arrow.counterclockwise")
-                    .font(.system(size: 18, weight: .bold))
-                //Text("RESET")
-                //    .font(.system(size: 7, weight: .black))
-            }
-            .foregroundColor(.white)
+            Image(systemName: "arrow.counterclockwise")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
         }
         .frame(width: size, height: size)
     }
 }
 
-// MARK: - Quadrant Clip Shape
+// MARK: - Shapes
 struct QuadrantClipShape: Shape {
     let quadrant: GameViewModel.Quadrant
-    
     func path(in rect: CGRect) -> Path {
         var path = Path()
         let center = CGPoint(x: rect.midX, y: rect.midY)
-        
         let startAngle: Angle = {
             switch quadrant {
-            case .green:  return .degrees(180)
-            case .red:    return .degrees(270)
-            case .yellow: return .degrees(90)
-            case .blue:   return .degrees(0)
+            case .green: return .degrees(180); case .red: return .degrees(270)
+            case .yellow: return .degrees(90); case .blue: return .degrees(0)
             }
         }()
-        
         path.move(to: center)
-        path.addArc(center: center, radius: rect.width,
-                    startAngle: startAngle, endAngle: startAngle + .degrees(90),
-                    clockwise: false)
+        path.addArc(center: center, radius: rect.width, startAngle: startAngle, endAngle: startAngle + .degrees(90), clockwise: false)
         path.closeSubpath()
         return path
-    }
-}
-
-struct ContentView_Previews: PreviewProvider {
-    static var previews: some View {
-        ContentView()
     }
 }
