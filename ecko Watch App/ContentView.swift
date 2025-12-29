@@ -151,6 +151,7 @@ class GameViewModel: ObservableObject {
         let distance = sqrt(pow(location.x - centerX, 2) + pow(location.y - centerY, 2))
         
         if distance < (size.width * 0.125) {
+            WKInterfaceDevice.current().play(.click)
             startGame()
             return
         }
@@ -331,32 +332,41 @@ struct ContentView: View {
     }
 
     private func resetButtonView(size: CGFloat) -> some View {
-        let internalIconSize = size * 0.95 // Size for the main arrow
+        let adjustedSize = size * 1.15
         
         return ZStack {
-            // The Button Background
             Circle()
                 .fill(Color(white: 0.12))
                 .overlay(Circle().stroke(Color.gray.opacity(0.4), lineWidth: 1.5))
                 .shadow(radius: 4)
 
-                Image(systemName: "slider.horizontal.2.arrow.trianglehead.counterclockwise")
-                    .font(.system(size: internalIconSize))
-                    .foregroundColor(.gray.opacity(0.75))
-                    .shadow(radius: 4)
-                    .offset(y: -2.7)
+            Image(systemName: "slider.horizontal.2.arrow.trianglehead.counterclockwise")
+                .font(.system(size: adjustedSize * 0.75))
+                .foregroundColor(.gray.opacity(0.75))
+                .offset(y: -2.7)
         }
-        .frame(width: size * 1.15, height: size * 1.15)
+        .frame(width: adjustedSize, height: adjustedSize)
         .contentShape(Circle())
-        // Gesture Logic
-        .onTapGesture {
-            WKInterfaceDevice.current().play(.click)
-            viewModel.startGame()
-        }
-        .onLongPressGesture(minimumDuration: 0.5) {
-            WKInterfaceDevice.current().play(.directionDown) // Distinct haptic for settings
-            showSettings = true
-        }
+        // 1. High Priority makes this "win" over the game board's drag gesture
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    // This triggers the MOMENT the finger touches the circle
+                    // Use .directionUp for a stronger "thump" to verify it works
+                    WKInterfaceDevice.current().play(.directionUp)
+                }
+                .onEnded { _ in
+                    // Logic for when they let go
+                    viewModel.startGame()
+                }
+        )
+        // 2. Keep the Long Press for Settings
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.5).onEnded { _ in
+                WKInterfaceDevice.current().play(.directionDown)
+                showSettings = true
+            }
+        )
     }
 }
 
@@ -402,5 +412,20 @@ struct SettingsView: View {
                 .buttonStyle(.borderedProminent)
         }
         .padding()
+    }
+}
+
+struct ResetButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            // This provides immediate visual feedback
+            .scaleEffect(configuration.isPressed ? 0.9 : 1.0)
+            .onChange(of: configuration.isPressed) { oldValue, isPressed in
+                if isPressed {
+                    // This triggers the MOMENT the finger touches the screen
+                    WKInterfaceDevice.current().play(.click)
+                }
+            }
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
     }
 }
