@@ -2,11 +2,7 @@ import AVFoundation
 
 class ToneGenerator {
     enum Waveform: Int, CaseIterable {
-        case square = 0
-        case sine = 1
-        case sawtooth = 2
-        case triangle = 3
-        
+        case square = 0, sine = 1, sawtooth = 2, triangle = 3
         var name: String {
             switch self {
             case .square: return "Retro Square"
@@ -20,20 +16,20 @@ class ToneGenerator {
     private var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode!
     private var isPlaying = false
-
     private var currentFrequency: Float = 440.0
     private var sampleRate: Float = 22050
     private var phase: Float = 0.0
     
-    // Controlled by the Settings/ViewModel
-    var amplitude: Float = 0.0
+    // NEW: masterVolume stays constant based on Crown
+    var masterVolume: Float = 0.5
+    // gate is 1.0 when a note is playing, 0.0 when stopped
+    private var gate: Float = 0.0
+    
     var selectedWaveform: Waveform = .square
 
     init() {
-        // Load the saved preference immediately
         let savedRaw = UserDefaults.standard.integer(forKey: "selectedWaveform")
         self.selectedWaveform = Waveform(rawValue: savedRaw) ?? .square
-        
         let retroFormat = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1)!
         setupEngine(format: retroFormat)
     }
@@ -44,23 +40,20 @@ class ToneGenerator {
             
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
             let phaseIncrement = strongSelf.currentFrequency / strongSelf.sampleRate
-            let currentAmp = strongSelf.amplitude
+            
+            // MATH: Combined Volume
+            let currentAmp = strongSelf.masterVolume * strongSelf.gate
             let waveform = strongSelf.selectedWaveform
             
             for frame in 0..<Int(frameCount) {
                 var value: Float = 0
-                let p = strongSelf.phase // 0.0 to 1.0
+                let p = strongSelf.phase
                 
-                // MATH: Generate the specific wave shape
                 switch waveform {
-                case .square:
-                    value = (p < 0.5) ? 1.0 : -1.0
-                case .sine:
-                    value = sin(p * 2.0 * .pi)
-                case .sawtooth:
-                    value = 2.0 * p - 1.0
-                case .triangle:
-                    value = 4.0 * abs(p - 0.5) - 1.0
+                case .square: value = (p < 0.5) ? 1.0 : -1.0
+                case .sine: value = sin(p * 2.0 * .pi)
+                case .sawtooth: value = 2.0 * p - 1.0
+                case .triangle: value = 4.0 * abs(p - 0.5) - 1.0
                 }
                 
                 let sample = value * currentAmp
@@ -84,7 +77,7 @@ class ToneGenerator {
 
     func play(frequency: Float) {
         self.currentFrequency = frequency
-        self.amplitude = 0.3
+        self.gate = 0.6 // Consistent note gain
         
         if !isPlaying {
             try? engine.start()
@@ -93,6 +86,6 @@ class ToneGenerator {
     }
 
     func stop() {
-        self.amplitude = 0.0
+        self.gate = 0.0 // Close the gate, but keep masterVolume ready
     }
 }
